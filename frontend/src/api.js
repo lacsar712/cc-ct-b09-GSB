@@ -60,3 +60,15 @@ export function createSubmission(tool_code, offset_um) {
     body: JSON.stringify({ tool_code, offset_um: Number(offset_um) }),
   });
 }
+
+export function fetchSnapshots() {
+  return request("/snapshots");
+}
+
+export function fetchSnapshot(id) {
+  return request(`/snapshots/${id}`);
+}
+
+export function takeSnapshot() {
+  return request("/snapshots", { method: "POST" });
+}
