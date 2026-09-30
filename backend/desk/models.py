@@ -57,3 +57,46 @@ class OffsetSubmission(models.Model):
 
     def __str__(self) -> str:
         return f"{self.tool_code} {self.offset_um}µm"
+
+
+class ShiftSnapshot(models.Model):
+    """班次留影：换班前把未办结刀补队列冻成只读快照。"""
+
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="shift_snapshots",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    item_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"留影#{self.pk} ({self.item_count}笔)"
+
+
+class ShiftSnapshotItem(models.Model):
+    """留影明细行：编号/刀号/刀补均为留影当刻的冻结副本，不随原单办结而变化。"""
+
+    snapshot = models.ForeignKey(
+        ShiftSnapshot,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    submission_id = models.BigIntegerField(db_index=True)
+    tool_code = models.CharField(max_length=32)
+    offset_um = models.IntegerField()
+    status = models.CharField(
+        max_length=16,
+        choices=OffsetSubmission.Status.choices,
+    )
+
+    class Meta:
+        ordering = ["submission_id"]
+
+    def __str__(self) -> str:
+        return f"#{self.submission_id} {self.tool_code} {self.offset_um}µm"

@@ -6,7 +6,8 @@ from ninja import NinjaAPI, Schema
 from ninja.errors import HttpError
 
 from desk.auth_utils import bearer_auth, create_access_token, verify_password
-from desk.models import OffsetSubmission, User
+from desk.models import OffsetSubmission, ShiftSnapshot, User
+from desk.services import SnapshotReconcileError, create_shift_snapshot
 
 api = NinjaAPI(title="数控刀补复核台", version="1.0")
 
@@ -42,6 +43,24 @@ class SubmissionOut(Schema):
     reviewed_at: Optional[datetime]
 
 
+class SnapshotItemOut(Schema):
+    submission_id: int
+    tool_code: str
+    offset_um: int
+    status: str
+
+
+class SnapshotOut(Schema):
+    id: int
+    created_at: datetime
+    created_by: str
+    item_count: int
+
+
+class SnapshotDetailOut(SnapshotOut):
+    items: list[SnapshotItemOut]
+
+
 def _to_out(row: OffsetSubmission) -> SubmissionOut:
     return SubmissionOut(
         id=row.id,
@@ -51,6 +70,30 @@ def _to_out(row: OffsetSubmission) -> SubmissionOut:
         verdict=row.verdict or "",
         created_at=row.created_at,
         reviewed_at=row.reviewed_at,
+    )
+
+
+def _snapshot_to_out(snapshot: ShiftSnapshot) -> SnapshotOut:
+    return SnapshotOut(
+        id=snapshot.id,
+        created_at=snapshot.created_at,
+        created_by=snapshot.created_by.username if snapshot.created_by else "—",
+        item_count=snapshot.item_count,
+    )
+
+
+def _snapshot_detail_to_out(snapshot: ShiftSnapshot) -> SnapshotDetailOut:
+    return SnapshotDetailOut(
+        **_snapshot_to_out(snapshot).dict(),
+        items=[
+            SnapshotItemOut(
+                submission_id=item.submission_id,
+                tool_code=item.tool_code,
+                offset_um=item.offset_um,
+                status=item.status,
+            )
+            for item in snapshot.items.all()
+        ],
     )
 
 
@@ -106,3 +149,34 @@ def create_submission(request: HttpRequest, body: SubmissionIn):
         status=OffsetSubmission.Status.PENDING,
     )
     return _to_out(row)
+
+
+@api.get("/snapshots", response=list[SnapshotOut], auth=bearer_auth)
+def list_snapshots(request: HttpRequest):
+    rows = ShiftSnapshot.objects.select_related("created_by").all()[:200]
+    return [_snapshot_to_out(r) for r in rows]
+
+
+@api.get("/snapshots/{snapshot_id}", response=SnapshotDetailOut, auth=bearer_auth)
+def get_snapshot(request: HttpRequest, snapshot_id: int):
+    try:
+        snapshot = (
+            ShiftSnapshot.objects.select_related("created_by")
+            .prefetch_related("items")
+            .get(pk=snapshot_id)
+        )
+    except ShiftSnapshot.DoesNotExist:
+        raise HttpError(404, "留影不存在")
+    return _snapshot_detail_to_out(snapshot)
+
+
+@api.post("/snapshots", response=SnapshotDetailOut, auth=bearer_auth)
+def create_snapshot(request: HttpRequest):
+    user: User = request.auth
+    if not user.can_write:
+        raise HttpError(403, "当前账号只读，不能一键留影")
+    try:
+        snapshot = create_shift_snapshot(user)
+    except SnapshotReconcileError:
+        raise HttpError(409, "留影期间在途队列发生变化，请重新留影")
+    return _snapshot_detail_to_out(snapshot)
